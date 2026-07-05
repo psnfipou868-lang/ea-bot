@@ -4,6 +4,7 @@ import urllib.request
 import urllib.error
 import threading
 import logging
+import re
 from pathlib import Path
 
 # ============================================
@@ -33,9 +34,10 @@ DATA_DIR.mkdir(exist_ok=True)
 
 user_sessions = {}
 running_tasks = {}
+user_phase = {}  # تخزين مرحلة الفحص لكل مستخدم
 
 # ============================================
-# 📂 دوال الملفات (محسّنة)
+# 📂 دوال الملفات
 # ============================================
 def read_file(path: str) -> list[str]:
     file_path = Path(path)
@@ -76,7 +78,33 @@ def clear_file(path: str) -> None:
             logger.exception("Failed to clear file: %s", exc)
 
 # ============================================
-# 🔍 دوال الفحص (مع معالجة الأخطاء)
+# 🔍 استخراج PSN ID من EA
+# ============================================
+def get_psn_id_from_ea(cookies: str, proxy=None) -> str | None:
+    try:
+        url = 'https://profile.ea.com/account/connected-accounts'
+        req = urllib.request.Request(url, method='GET')
+        req.add_header('Cookie', cookies)
+        req.add_header('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)')
+        if proxy:
+            proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+            opener = urllib.request.build_opener(proxy_handler)
+            urllib.request.install_opener(opener)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode()
+            match = re.search(r'Playstation["\']?Network.*?([A-Za-z0-9_\-]+)', html, re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1)
+            match2 = re.search(r'psn[_\-]?id["\']?\s*:\s*["\']([A-Za-z0-9_\-]+)', html, re.IGNORECASE)
+            if match2:
+                return match2.group(1)
+            return None
+    except Exception as exc:
+        logger.exception("Failed to get PSN ID from EA: %s", exc)
+        return None
+
+# ============================================
+# 🔍 دوال الفحص
 # ============================================
 def check_ea(email, proxy=None):
     try:
@@ -90,11 +118,13 @@ def check_ea(email, proxy=None):
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
             if data.get('available') == True:
-                return 'not-linked'
-            return 'linked'
+                return 'not-linked', None, None
+            cookies = resp.headers.get('Set-Cookie', '')
+            psn_id = get_psn_id_from_ea(cookies, proxy)
+            return 'linked', cookies, psn_id
     except Exception as exc:
         logger.exception("EA check error for %s: %s", email, exc)
-        return 'error'
+        return 'error', None, None
 
 def check_ms(email, proxy=None):
     try:
@@ -118,7 +148,7 @@ def check_ms(email, proxy=None):
         logger.exception("MS check error for %s: %s", email, exc)
         return 'error'
 
-def check_psn(email, proxy=None):
+def check_psn_direct(email, proxy=None):
     try:
         url = 'https://ca.account.sony.com/api/v1/ssocookie'
         data = json.dumps({
@@ -142,13 +172,13 @@ def check_psn(email, proxy=None):
             else:
                 return 'error'
     except Exception as exc:
-        logger.exception("PSN check error for %s: %s", email, exc)
+        logger.exception("PSN direct check error for %s: %s", email, exc)
         if 'account.notfound' in str(exc):
             return 'not-linked'
         return 'error'
 
 # ============================================
-# 🚀 مولد الإيميلات (جميع الصيغ)
+# 🚀 مولد الإيميلات
 # ============================================
 def generate_emails(first, second=''):
     domains = ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com']
@@ -226,12 +256,14 @@ def generate_emails(first, second=''):
     return list(set(final))
 
 # ============================================
-# 🌐 دوال التلغرام (مع تحسين getUpdates)
+# 🌐 دوال التلغرام
 # ============================================
-def send_message(chat_id, text):
+def send_message(chat_id, text, keyboard=None):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = f"chat_id={chat_id}&text={text}&parse_mode=Markdown"
+        if keyboard:
+            data += f"&reply_markup={json.dumps(keyboard)}"
         req = urllib.request.Request(url, data=data.encode('utf-8'), method='POST')
         urllib.request.urlopen(req, timeout=10)
         return True
@@ -274,11 +306,39 @@ def get_updates(offset=None):
         return []
 
 # ============================================
+# 🎛️ دوال الأزرار (بالعربية)
+# ============================================
+def phase_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "🔍 EA فقط", "callback_data": "phase_ea"}],
+            [{"text": "📤 Microsoft فقط", "callback_data": "phase_ms"}],
+            [{"text": "🔁 EA + Microsoft", "callback_data": "phase_both"}],
+            [{"text": "🎮 الكل (+ PlayStation)", "callback_data": "phase_all"}]
+        ]
+    }
+
+def proxy_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📋 قائمة", "callback_data": "proxy_list"},
+                {"text": "➕ إضافة بروكسيات", "callback_data": "proxy_add"}
+            ],
+            [
+                {"text": "✅ اختبار الكل", "callback_data": "proxy_test"},
+                {"text": "🗑 مسح الكل", "callback_data": "proxy_clear"}
+            ]
+        ]
+    }
+
+# ============================================
 # ⚙️ تشغيل الفحوصات (خيوط)
 # ============================================
 def run_ea_check(chat_id, emails, proxies):
     clear_file(DATA_DIR / 'Linked.txt')
     clear_file(DATA_DIR / 'NotLinked.txt')
+    clear_file(DATA_DIR / 'PSN_Linked.txt')
     
     send_message(chat_id, f"▶️ **بدء فحص EA** لـ {len(emails)} إيميل...")
     linked, not_linked = [], []
@@ -288,11 +348,13 @@ def run_ea_check(chat_id, emails, proxies):
             send_message(chat_id, "⏹️ تم إيقاف الفحص")
             break
         proxy = proxies[i % len(proxies)] if proxies else None
-        result = check_ea(email, proxy)
-        if result == 'linked':
+        status, cookies, psn_id = check_ea(email, proxy)
+        if status == 'linked':
             linked.append(email)
             append_file(DATA_DIR / 'Linked.txt', email)
-        elif result == 'not-linked':
+            if psn_id:
+                append_file(DATA_DIR / 'PSN_Linked.txt', f"{email} | PSN: {psn_id}")
+        elif status == 'not-linked':
             not_linked.append(email)
             append_file(DATA_DIR / 'NotLinked.txt', email)
         if (i+1) % 10 == 0 or (i+1) == total:
@@ -300,7 +362,14 @@ def run_ea_check(chat_id, emails, proxies):
     send_message(chat_id, f"✅ **انتهى فحص EA**\n🔗 مرتبط: {len(linked)}\n❌ غير مرتبط: {len(not_linked)}")
     if linked:
         send_file(chat_id, DATA_DIR / 'Linked.txt', "🔗 الإيميلات المرتبطة بـ EA")
+        if (DATA_DIR / 'PSN_Linked.txt').exists() and (DATA_DIR / 'PSN_Linked.txt').stat().st_size > 0:
+            send_file(chat_id, DATA_DIR / 'PSN_Linked.txt', "🎮 الإيميلات المرتبطة بـ PSN (مع الـ ID)")
     if not_linked:
+        # التحقق من مرحلة المستخدم
+        phase = user_phase.get(chat_id, 'both')
+        if phase == 'ea':
+            running_tasks[chat_id] = False
+            return
         run_ms_check(chat_id, not_linked, proxies)
     else:
         running_tasks[chat_id] = False
@@ -348,7 +417,7 @@ def run_psn_check(chat_id, emails, proxies):
             send_message(chat_id, "⏹️ تم إيقاف الفحص")
             break
         proxy = proxies[i % len(proxies)] if proxies else None
-        result = check_psn(email, proxy)
+        result = check_psn_direct(email, proxy)
         if result == 'linked':
             linked.append(email)
             append_file(DATA_DIR / 'PSN_Linked.txt', email)
@@ -366,11 +435,12 @@ def run_psn_check(chat_id, emails, proxies):
     running_tasks[chat_id] = False
 
 # ============================================
-# ⚙️ معالج الأوامر (محسّن)
+# ⚙️ معالج الأوامر
 # ============================================
 def process_command(chat_id, text):
     global user_sessions
     
+    # ===== جلسات التوليد =====
     if chat_id in user_sessions:
         session = user_sessions[chat_id]
         step = session.get('step')
@@ -394,22 +464,20 @@ def process_command(chat_id, text):
             del user_sessions[chat_id]
             return
     
-    # ===== قائمة الأوامر الرئيسية =====
+    # ===== قائمة البداية =====
     menu = """
-🤖 **EA + Outlook + PSN Checker v4.0** 🌟
+🤖 **بوت EA + Outlook + PSN** 🌟
 
 📌 **الأوامر المتاحة:**
 
-/generate  🚀 توليد إيميلات (تفاعلي)
-/check_ea   🔍 فحص EA (تلقائي يشمل MS)
-/check_psn  🎮 فحص PlayStation
-/add_proxy  🌐 إضافة بروكسيات (رفع ملف أو كتابة)
-/check      📧 فحص إيميل واحد
-/stop       ⏹️ إيقاف الفحص
-/stats      📊 إحصائيات
-/export     📁 تصدير النتائج
-/menu       📋 عرض هذه القائمة
-/help       ❓ المساعدة
+/generate  🚀 توليد إيميلات
+/check     🔍 فحص الإيميلات (اختر المرحلة)
+/add_proxy 🌐 إدارة البروكسيات
+/stop      ⏹️ إيقاف الفحص
+/stats     📊 إحصائيات
+/export    📁 تصدير النتائج
+/menu      📋 عرض القائمة
+/help      ❓ المساعدة
 """
     
     if text == "/start" or text == "/menu":
@@ -418,18 +486,13 @@ def process_command(chat_id, text):
     elif text == "/help":
         send_message(chat_id, menu)
     
+    # ===== إدارة البروكسيات (بالعربي) =====
     elif text == "/add_proxy":
-        send_message(chat_id, "📤 **أرسل البروكسيات** (نصاً أو ملفاً)\nكل بروكسي في سطر:\n`http://user:pass@ip:port`\n`socks5://ip:port`\n`http://ip:port`")
+        send_message(chat_id, "🌐 **مدير البروكسيات**\nاختر الإجراء:", proxy_keyboard())
     
-    elif text == "/generate":
-        user_sessions[chat_id] = {'step': 'awaiting_first'}
-        send_message(chat_id, "📝 أرسل الكلمة الأولى (مثل: `king`):")
-    
-    elif text == "/stop":
-        running_tasks[chat_id] = False
-        send_message(chat_id, "⏹️ جاري إيقاف الفحص...")
-    
-    elif text == "/check_ea":
+    # ===== فحص الإيميلات (مع اختيار المرحلة) =====
+    elif text == "/check":
+        # التحقق من وجود إيميلات
         emails = read_file(DATA_DIR / 'emails.txt')
         if not emails:
             send_message(chat_id, "❌ لا توجد إيميلات! استخدم `/generate` أولاً")
@@ -438,39 +501,17 @@ def process_command(chat_id, text):
         if not proxies:
             send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم `/add_proxy`")
             return
-        running_tasks[chat_id] = True
-        threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
+        # عرض أزرار اختيار المرحلة
+        send_message(chat_id, "🔍 **اختر مرحلة الفحص:**", phase_keyboard())
     
-    elif text == "/check_psn":
-        emails = read_file(DATA_DIR / 'emails.txt')
-        if not emails:
-            send_message(chat_id, "❌ لا توجد إيميلات! استخدم `/generate`")
-            return
-        proxies = read_file(DATA_DIR / 'proxies.txt')
-        if not proxies:
-            send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم `/add_proxy`")
-            return
-        running_tasks[chat_id] = True
-        threading.Thread(target=run_psn_check, args=(chat_id, emails, proxies), daemon=True).start()
+    # ===== أوامر أخرى =====
+    elif text == "/generate":
+        user_sessions[chat_id] = {'step': 'awaiting_first'}
+        send_message(chat_id, "📝 أرسل الكلمة الأولى (مثل: `king`):")
     
-    elif text == "/check":
-        # تنسيق /check email@example.com
-        parts = text.split()
-        if len(parts) < 2:
-            send_message(chat_id, "❌ استخدم: `/check email@example.com`")
-            return
-        email = parts[1]
-        if '@' not in email:
-            send_message(chat_id, "❌ الإيميل غير صالح")
-            return
-        # فحص فوري
-        send_message(chat_id, f"📧 جاري فحص: `{email}`")
-        proxy = read_file(DATA_DIR / 'proxies.txt')
-        p = proxy[0] if proxy else None
-        ea = check_ea(email, p)
-        ms = check_ms(email, p)
-        psn = check_psn(email, p)
-        send_message(chat_id, f"📧 **{email}**\n🔗 EA: {ea}\n📤 MS: {ms}\n🎮 PSN: {psn}")
+    elif text == "/stop":
+        running_tasks[chat_id] = False
+        send_message(chat_id, "⏹️ جاري إيقاف الفحص...")
     
     elif text == "/stats":
         files = {
@@ -480,7 +521,7 @@ def process_command(chat_id, text):
             'Available.txt': '📤 متاح (MS)',
             'NotAvailable.txt': '📥 غير متاح (MS)',
             'Errors.txt': '⚠️ أخطاء (MS)',
-            'PSN_Linked.txt': '🎮 مرتبط بـ PSN',
+            'PSN_Linked.txt': '🎮 مرتبط بـ PSN (مع الـ ID)',
             'PSN_NotLinked.txt': '❌ غير مرتبط بـ PSN',
             'PSN_Errors.txt': '⚠️ أخطاء PSN'
         }
@@ -506,8 +547,87 @@ def process_command(chat_id, text):
             send_message(chat_id, f"✅ تم إرسال {sent} ملف")
     
     else:
-        # أي أمر غير معروف – لا نرد (يسكت)
+        # أوامر غير معروفة (يسكت)
         pass
+
+# ============================================
+# 🎛️ معالج الأزرار (Callback Queries)
+# ============================================
+def process_callback(chat_id, data):
+    global user_phase, running_tasks
+    
+    # ===== مراحل الفحص =====
+    if data.startswith("phase_"):
+        phase = data.replace("phase_", "")
+        user_phase[chat_id] = phase
+        phase_names = {
+            "ea": "🔍 EA فقط",
+            "ms": "📤 Microsoft فقط",
+            "both": "🔁 EA + Microsoft",
+            "all": "🎮 الكل (+ PlayStation)"
+        }
+        send_message(chat_id, f"✅ تم اختيار: **{phase_names.get(phase, phase)}**")
+        
+        # بدء الفحص تلقائياً
+        emails = read_file(DATA_DIR / 'emails.txt')
+        proxies = read_file(DATA_DIR / 'proxies.txt')
+        if not emails:
+            send_message(chat_id, "❌ لا توجد إيميلات! استخدم `/generate`")
+            return
+        if not proxies:
+            send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم `/add_proxy`")
+            return
+        
+        running_tasks[chat_id] = True
+        
+        if phase == "ea":
+            threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
+        elif phase == "ms":
+            # فحص Microsoft مباشرة
+            threading.Thread(target=run_ms_check, args=(chat_id, emails, proxies), daemon=True).start()
+        elif phase == "both":
+            threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
+        elif phase == "all":
+            # EA + MS + PSN
+            threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
+            # بعد EA نضيف PSN
+    
+    # ===== إدارة البروكسيات =====
+    elif data == "proxy_list":
+        proxies = read_file(DATA_DIR / 'proxies.txt')
+        if proxies:
+            msg = "📋 **قائمة البروكسيات:**\n" + "\n".join([f"{i+1}. {p}" for i, p in enumerate(proxies)])
+        else:
+            msg = "❌ لا توجد بروكسيات محملة"
+        send_message(chat_id, msg, proxy_keyboard())
+    
+    elif data == "proxy_add":
+        user_sessions[chat_id] = {'step': 'awaiting_proxy'}
+        send_message(chat_id, "📤 **أرسل البروكسيات** (نصاً أو ملفاً)\nكل بروكسي في سطر:\n`http://user:pass@ip:port`\n`socks5://ip:port`\n`http://ip:port`")
+    
+    elif data == "proxy_test":
+        proxies = read_file(DATA_DIR / 'proxies.txt')
+        if not proxies:
+            send_message(chat_id, "❌ لا توجد بروكسيات للاختبار")
+            return
+        send_message(chat_id, f"🧪 جاري اختبار {len(proxies)} بروكسي...")
+        valid = 0
+        for p in proxies:
+            try:
+                proxy_handler = urllib.request.ProxyHandler({'http': p, 'https': p})
+                opener = urllib.request.build_opener(proxy_handler)
+                urllib.request.install_opener(opener)
+                req = urllib.request.Request('https://api.ipify.org', method='GET')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        valid += 1
+            except:
+                pass
+        send_message(chat_id, f"✅ **نتيجة الاختبار:**\n{valid}/{len(proxies)} بروكسي صالح", proxy_keyboard())
+    
+    elif data == "proxy_clear":
+        write_file(DATA_DIR / 'proxies.txt', [])
+        send_message(chat_id, "🗑 تم مسح جميع البروكسيات", proxy_keyboard())
 
 # ============================================
 # 🏃 تشغيل البوت
@@ -527,6 +647,7 @@ def run_bot():
                 msg = u.get('message', {})
                 chat_id = msg.get('chat', {}).get('id')
                 
+                # ===== معالجة الملفات المرفوعة =====
                 if 'document' in msg:
                     file_id = msg['document']['file_id']
                     try:
@@ -541,12 +662,13 @@ def run_bot():
                                 content = resp2.read().decode('utf-8', errors='ignore')
                                 proxies = [p.strip() for p in content.split('\n') if p.strip()]
                                 write_file(DATA_DIR / 'proxies.txt', proxies)
-                                send_message(chat_id, f"🌐 تم استلام {len(proxies)} بروكسي وحفظها بنجاح\n📁 المجموع: {len(proxies)}")
+                                send_message(chat_id, f"🌐 **تم استلام {len(proxies)} بروكسي وحفظها بنجاح**\n📁 المجموع: {len(proxies)}")
                     except Exception as exc:
                         logger.exception("Failed to process uploaded file: %s", exc)
                         send_message(chat_id, f"❌ فشل في قراءة الملف: {str(exc)}")
                     continue
                 
+                # ===== معالجة النصوص =====
                 text = msg.get('text', '')
                 if chat_id and text:
                     if text.startswith('/'):
@@ -557,16 +679,36 @@ def run_bot():
                         existing = read_file(DATA_DIR / 'proxies.txt')
                         all_proxies = existing + proxies
                         write_file(DATA_DIR / 'proxies.txt', all_proxies)
-                        send_message(chat_id, f"🌐 تم إضافة {len(proxies)} بروكسي\n📁 المجموع: {len(all_proxies)}")
+                        send_message(chat_id, f"🌐 **تم إضافة {len(proxies)} بروكسي بنجاح**\n📁 المجموع: {len(all_proxies)}")
                     elif '@' in text and len(text.split()) == 1:
+                        # فحص إيميل واحد مباشر
                         email = text.strip()
                         send_message(chat_id, f"📧 جاري فحص: `{email}`")
                         proxy = read_file(DATA_DIR / 'proxies.txt')
                         p = proxy[0] if proxy else None
-                        ea = check_ea(email, p)
+                        status, cookies, psn_id = check_ea(email, p)
                         ms = check_ms(email, p)
-                        psn = check_psn(email, p)
-                        send_message(chat_id, f"📧 **{email}**\n🔗 EA: {ea}\n📤 MS: {ms}\n🎮 PSN: {psn}")
+                        psn_direct = check_psn_direct(email, p)
+                        msg = f"📧 **{email}**\n🔗 EA: {status}"
+                        if status == 'linked' and psn_id:
+                            msg += f"\n🎮 PSN ID: `{psn_id}`"
+                        msg += f"\n📤 MS: {ms}"
+                        if psn_direct:
+                            msg += f"\n🎮 PSN (مباشر): {psn_direct}"
+                        send_message(chat_id, msg)
+                
+                # ===== معالجة الأزرار =====
+                if 'callback_query' in u:
+                    callback = u['callback_query']
+                    chat_id = callback['message']['chat']['id']
+                    data = callback['data']
+                    # الرد على الضغطة
+                    try:
+                        answer_url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery?callback_query_id={callback['id']}"
+                        urllib.request.urlopen(answer_url, timeout=5)
+                    except:
+                        pass
+                    process_callback(chat_id, data)
             
             time.sleep(2)
         except Exception as exc:
