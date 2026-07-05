@@ -1,48 +1,82 @@
-import os
 import time
 import json
 import urllib.request
 import urllib.error
-from datetime import datetime
+import threading
+import logging
+from pathlib import Path
 
 # ============================================
-# 🔑 توكن البوت (تم التحديث)
+# 📋 إعدادات التسجيل
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# 🔑 توكن البوت
 # ============================================
 BOT_TOKEN = "8761475257:AAFWe7VRfRSaKtPC-bRAkcZy_oh9VUzJIEk"
 
 # ============================================
 # 📁 الإعدادات
 # ============================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
 
 user_sessions = {}
 running_tasks = {}
 
 # ============================================
-# 📂 دوال الملفات
+# 📂 دوال الملفات (محسّنة)
 # ============================================
-def read_file(path):
-    if not os.path.exists(path):
+def read_file(path: str) -> list[str]:
+    file_path = Path(path)
+    if not file_path.exists():
+        logger.warning("File not found: %s", file_path)
         return []
-    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-        return [line.strip() for line in f if line.strip()]
+    try:
+        with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+            return [line.strip() for line in f if line.strip()]
+    except OSError as exc:
+        logger.exception("Failed to read file: %s", exc)
+        return []
 
-def write_file(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(data))
+def write_file(path: str, data: list[str]) -> None:
+    file_path = Path(path)
+    try:
+        with file_path.open("w", encoding="utf-8") as f:
+            f.write("\n".join(data))
+        logger.info("Written %d lines to %s", len(data), file_path)
+    except OSError as exc:
+        logger.exception("Failed to write file: %s", exc)
 
-def append_file(path, data):
-    with open(path, 'a', encoding='utf-8') as f:
-        f.write(data + '\n')
+def append_file(path: str, line: str) -> None:
+    file_path = Path(path)
+    try:
+        with file_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as exc:
+        logger.exception("Failed to append to file: %s", exc)
 
-def clear_file(path):
-    if os.path.exists(path):
-        os.remove(path)
+def clear_file(path: str) -> None:
+    file_path = Path(path)
+    if file_path.exists():
+        try:
+            file_path.unlink()
+            logger.info("Cleared file: %s", file_path)
+        except OSError as exc:
+            logger.exception("Failed to clear file: %s", exc)
 
 # ============================================
-# 🔍 فاحص EA
+# 🔍 دوال الفحص (مع معالجة الأخطاء)
 # ============================================
 def check_ea(email, proxy=None):
     try:
@@ -58,12 +92,10 @@ def check_ea(email, proxy=None):
             if data.get('available') == True:
                 return 'not-linked'
             return 'linked'
-    except:
+    except Exception as exc:
+        logger.exception("EA check error for %s: %s", email, exc)
         return 'error'
 
-# ============================================
-# 🔍 فاحص Microsoft
-# ============================================
 def check_ms(email, proxy=None):
     try:
         url = 'https://login.microsoftonline.com/common/GetCredentialType'
@@ -82,12 +114,10 @@ def check_ms(email, proxy=None):
                 return 'not-available'
             else:
                 return 'error'
-    except:
+    except Exception as exc:
+        logger.exception("MS check error for %s: %s", email, exc)
         return 'error'
 
-# ============================================
-# 🔍 فاحص PlayStation (PSN)
-# ============================================
 def check_psn(email, proxy=None):
     try:
         url = 'https://ca.account.sony.com/api/v1/ssocookie'
@@ -106,15 +136,16 @@ def check_psn(email, proxy=None):
             result = json.loads(resp.read().decode())
             error_code = result.get('error_code', '')
             if error_code in ['4165', '4145', '4100', '4155']:
-                return 'linked', None
+                return 'linked'
             elif error_code in ['4168', '4150', '4160']:
-                return 'not-linked', None
+                return 'not-linked'
             else:
-                return 'error', None
-    except Exception as e:
-        if 'account.notfound' in str(e):
-            return 'not-linked', None
-        return 'error', None
+                return 'error'
+    except Exception as exc:
+        logger.exception("PSN check error for %s: %s", email, exc)
+        if 'account.notfound' in str(exc):
+            return 'not-linked'
+        return 'error'
 
 # ============================================
 # 🚀 مولد الإيميلات (جميع الصيغ)
@@ -125,7 +156,7 @@ def generate_emails(first, second=''):
     separators = ['', '-', '.', '_']
     years = list(range(1970, 2031))
     numbers = list(range(0, 1000))
-    extra_words = ['PLAY', 'PLAYSTATION', 'PS3', 'PSN']
+    extra_words = ['PLAY', 'PLAYSTATION', 'PS3', 'PSN', 'GAMER', 'PRO', 'KING']
     
     words = [first]
     if second:
@@ -136,12 +167,12 @@ def generate_emails(first, second=''):
         for sep in separators:
             if sep:
                 results.add(w + sep + w)
-            for num in numbers[:200]:
+            for num in numbers:
                 if sep:
                     results.add(w + sep + str(num))
                 else:
                     results.add(w + str(num))
-            for year in years[:20]:
+            for year in years:
                 if sep:
                     results.add(w + sep + str(year))
                 else:
@@ -154,17 +185,17 @@ def generate_emails(first, second=''):
             if sep:
                 results.add(first + sep + second)
                 results.add(second + sep + first)
-                for num in numbers[:200]:
+                for num in numbers:
                     results.add(first + sep + second + sep + str(num))
                     results.add(second + sep + first + sep + str(num))
-                for year in years[:20]:
+                for year in years:
                     results.add(first + sep + second + sep + str(year))
                     results.add(second + sep + first + sep + str(year))
             else:
-                for num in numbers[:200]:
+                for num in numbers:
                     results.add(first + second + str(num))
                     results.add(second + first + str(num))
-                for year in years[:20]:
+                for year in years:
                     results.add(first + second + str(year))
                     results.add(second + first + str(year))
         
@@ -178,6 +209,15 @@ def generate_emails(first, second=''):
                     results.add(first + extra)
                     results.add(second + extra)
                     results.add(first + second + extra)
+        
+        for sep1 in ['-', '.', '_']:
+            for sep2 in ['-', '.', '_']:
+                results.add(first + sep1 + second + sep2 + '0')
+                results.add(first + sep1 + second + sep2 + '100')
+                results.add(first + sep1 + second + sep2 + '123')
+                results.add(first + sep1 + second + sep2 + '2026')
+                for num in numbers[:100]:
+                    results.add(first + sep1 + second + sep2 + str(num))
     
     final = []
     for email in results:
@@ -186,7 +226,7 @@ def generate_emails(first, second=''):
     return list(set(final))
 
 # ============================================
-# 🌐 دوال التلغرام
+# 🌐 دوال التلغرام (مع تحسين getUpdates)
 # ============================================
 def send_message(chat_id, text):
     try:
@@ -195,7 +235,8 @@ def send_message(chat_id, text):
         req = urllib.request.Request(url, data=data.encode('utf-8'), method='POST')
         urllib.request.urlopen(req, timeout=10)
         return True
-    except:
+    except Exception as exc:
+        logger.exception("Failed to send message: %s", exc)
         return False
 
 def send_file(chat_id, file_path, caption=""):
@@ -210,36 +251,36 @@ def send_file(chat_id, file_path, caption=""):
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'
             f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="document"; filename="{os.path.basename(file_path)}"\r\n'
+            f'Content-Disposition: form-data; name="document"; filename="{Path(file_path).name}"\r\n'
             f"Content-Type: text/plain\r\n\r\n"
         ).encode('utf-8') + file_data + f"\r\n--{boundary}--\r\n".encode('utf-8')
         req = urllib.request.Request(url, data=body, method='POST')
         req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
         urllib.request.urlopen(req, timeout=30)
         return True
-    except:
+    except Exception as exc:
+        logger.exception("Failed to send file: %s", exc)
         return False
 
 def get_updates(offset=None):
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        if offset:
-            url += f"?offset={offset}"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
         req = urllib.request.Request(url, method='GET')
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=35) as resp:
             data = json.loads(resp.read().decode())
             return data.get('result', [])
-    except:
+    except Exception as exc:
+        logger.exception("Failed to get updates: %s", exc)
         return []
 
 # ============================================
 # ⚙️ تشغيل الفحوصات (خيوط)
 # ============================================
 def run_ea_check(chat_id, emails, proxies):
-    clear_file(os.path.join(DATA_DIR, 'Linked.txt'))
-    clear_file(os.path.join(DATA_DIR, 'NotLinked.txt'))
+    clear_file(DATA_DIR / 'Linked.txt')
+    clear_file(DATA_DIR / 'NotLinked.txt')
     
-    send_message(chat_id, f"▶️ بدء فحص EA لـ {len(emails)} إيميل...")
+    send_message(chat_id, f"▶️ **بدء فحص EA** لـ {len(emails)} إيميل...")
     linked, not_linked = [], []
     total = len(emails)
     for i, email in enumerate(emails):
@@ -250,27 +291,26 @@ def run_ea_check(chat_id, emails, proxies):
         result = check_ea(email, proxy)
         if result == 'linked':
             linked.append(email)
-            append_file(os.path.join(DATA_DIR, 'Linked.txt'), email)
+            append_file(DATA_DIR / 'Linked.txt', email)
         elif result == 'not-linked':
             not_linked.append(email)
-            append_file(os.path.join(DATA_DIR, 'NotLinked.txt'), email)
+            append_file(DATA_DIR / 'NotLinked.txt', email)
         if (i+1) % 10 == 0 or (i+1) == total:
-            send_message(chat_id, f"📊 {i+1}/{total}\n🔗 {len(linked)}\n❌ {len(not_linked)}")
-    send_message(chat_id, f"✅ انتهى EA\n🔗 {len(linked)}\n❌ {len(not_linked)}")
+            send_message(chat_id, f"📊 **{i+1}/{total}**\n🔗 مرتبط: {len(linked)}\n❌ غير مرتبط: {len(not_linked)}")
+    send_message(chat_id, f"✅ **انتهى فحص EA**\n🔗 مرتبط: {len(linked)}\n❌ غير مرتبط: {len(not_linked)}")
     if linked:
-        send_file(chat_id, os.path.join(DATA_DIR, 'Linked.txt'), "🔗 المرتبطة بـ EA")
-    # تشغيل MS تلقائياً
+        send_file(chat_id, DATA_DIR / 'Linked.txt', "🔗 الإيميلات المرتبطة بـ EA")
     if not_linked:
         run_ms_check(chat_id, not_linked, proxies)
     else:
         running_tasks[chat_id] = False
 
 def run_ms_check(chat_id, emails, proxies):
-    clear_file(os.path.join(DATA_DIR, 'Available.txt'))
-    clear_file(os.path.join(DATA_DIR, 'NotAvailable.txt'))
-    clear_file(os.path.join(DATA_DIR, 'Errors.txt'))
+    clear_file(DATA_DIR / 'Available.txt')
+    clear_file(DATA_DIR / 'NotAvailable.txt')
+    clear_file(DATA_DIR / 'Errors.txt')
     
-    send_message(chat_id, f"▶️ فحص Microsoft لـ {len(emails)} إيميل...")
+    send_message(chat_id, f"▶️ **بدء فحص Microsoft** لـ {len(emails)} إيميل...")
     available, not_available, errors = [], [], []
     total = len(emails)
     for i, email in enumerate(emails):
@@ -281,26 +321,26 @@ def run_ms_check(chat_id, emails, proxies):
         result = check_ms(email, proxy)
         if result == 'available':
             available.append(email)
-            append_file(os.path.join(DATA_DIR, 'Available.txt'), email)
+            append_file(DATA_DIR / 'Available.txt', email)
         elif result == 'not-available':
             not_available.append(email)
-            append_file(os.path.join(DATA_DIR, 'NotAvailable.txt'), email)
+            append_file(DATA_DIR / 'NotAvailable.txt', email)
         else:
             errors.append(email)
-            append_file(os.path.join(DATA_DIR, 'Errors.txt'), email)
+            append_file(DATA_DIR / 'Errors.txt', email)
         if (i+1) % 10 == 0 or (i+1) == total:
-            send_message(chat_id, f"📊 MS {i+1}/{total}\n📤 {len(available)}\n📥 {len(not_available)}\n⚠️ {len(errors)}")
-    send_message(chat_id, f"✅ انتهى MS\n📤 {len(available)}\n📥 {len(not_available)}\n⚠️ {len(errors)}")
+            send_message(chat_id, f"📊 **MS {i+1}/{total}**\n📤 متاح: {len(available)}\n📥 غير متاح: {len(not_available)}\n⚠️ أخطاء: {len(errors)}")
+    send_message(chat_id, f"✅ **انتهى فحص Microsoft**\n📤 متاح: {len(available)}\n📥 غير متاح: {len(not_available)}\n⚠️ أخطاء: {len(errors)}")
     if available:
-        send_file(chat_id, os.path.join(DATA_DIR, 'Available.txt'), "📤 المتاحة")
+        send_file(chat_id, DATA_DIR / 'Available.txt', "📤 الإيميلات المتاحة")
     running_tasks[chat_id] = False
 
 def run_psn_check(chat_id, emails, proxies):
-    clear_file(os.path.join(DATA_DIR, 'PSN_Linked.txt'))
-    clear_file(os.path.join(DATA_DIR, 'PSN_NotLinked.txt'))
-    clear_file(os.path.join(DATA_DIR, 'PSN_Errors.txt'))
+    clear_file(DATA_DIR / 'PSN_Linked.txt')
+    clear_file(DATA_DIR / 'PSN_NotLinked.txt')
+    clear_file(DATA_DIR / 'PSN_Errors.txt')
     
-    send_message(chat_id, f"▶️ فحص PSN لـ {len(emails)} إيميل...")
+    send_message(chat_id, f"▶️ **بدء فحص PlayStation** لـ {len(emails)} إيميل...")
     linked, not_linked, errors = [], [], []
     total = len(emails)
     for i, email in enumerate(emails):
@@ -308,30 +348,29 @@ def run_psn_check(chat_id, emails, proxies):
             send_message(chat_id, "⏹️ تم إيقاف الفحص")
             break
         proxy = proxies[i % len(proxies)] if proxies else None
-        status, _ = check_psn(email, proxy)
-        if status == 'linked':
+        result = check_psn(email, proxy)
+        if result == 'linked':
             linked.append(email)
-            append_file(os.path.join(DATA_DIR, 'PSN_Linked.txt'), email)
-        elif status == 'not-linked':
+            append_file(DATA_DIR / 'PSN_Linked.txt', email)
+        elif result == 'not-linked':
             not_linked.append(email)
-            append_file(os.path.join(DATA_DIR, 'PSN_NotLinked.txt'), email)
+            append_file(DATA_DIR / 'PSN_NotLinked.txt', email)
         else:
             errors.append(email)
-            append_file(os.path.join(DATA_DIR, 'PSN_Errors.txt'), email)
+            append_file(DATA_DIR / 'PSN_Errors.txt', email)
         if (i+1) % 10 == 0 or (i+1) == total:
-            send_message(chat_id, f"📊 PSN {i+1}/{total}\n🎮 {len(linked)}\n❌ {len(not_linked)}\n⚠️ {len(errors)}")
-    send_message(chat_id, f"✅ انتهى PSN\n🎮 {len(linked)}\n❌ {len(not_linked)}\n⚠️ {len(errors)}")
+            send_message(chat_id, f"📊 **PSN {i+1}/{total}**\n🎮 مرتبط: {len(linked)}\n❌ غير مرتبط: {len(not_linked)}\n⚠️ أخطاء: {len(errors)}")
+    send_message(chat_id, f"✅ **انتهى فحص PlayStation**\n🎮 مرتبط: {len(linked)}\n❌ غير مرتبط: {len(not_linked)}\n⚠️ أخطاء: {len(errors)}")
     if linked:
-        send_file(chat_id, os.path.join(DATA_DIR, 'PSN_Linked.txt'), "🎮 المرتبطة بـ PSN")
+        send_file(chat_id, DATA_DIR / 'PSN_Linked.txt', "🎮 الإيميلات المرتبطة بـ PSN")
     running_tasks[chat_id] = False
 
 # ============================================
-# ⚙️ معالج الأوامر
+# ⚙️ معالج الأوامر (محسّن)
 # ============================================
 def process_command(chat_id, text):
     global user_sessions
     
-    # ===== جلسات التوليد =====
     if chat_id in user_sessions:
         session = user_sessions[chat_id]
         step = session.get('step')
@@ -348,77 +387,90 @@ def process_command(chat_id, text):
             first = session['first']
             second = session['second']
             emails = generate_emails(first, second)
-            write_file(os.path.join(DATA_DIR, 'emails.txt'), emails)
-            send_message(chat_id, f"✅ تم توليد {len(emails)} إيميل\n📁 حفظ في emails.txt")
+            write_file(DATA_DIR / 'emails.txt', emails)
+            send_message(chat_id, f"✅ **تم توليد {len(emails)} إيميل**\n📁 حفظ في `emails.txt`")
             sample = "\n".join(emails[:15])
-            send_message(chat_id, f"📋 عينة:\n{sample}")
+            send_message(chat_id, f"📋 **عينة من الإيميلات:**\n```\n{sample}\n```")
             del user_sessions[chat_id]
             return
     
-    # ===== الأوامر الرئيسية =====
-    if text == "/start":
-        send_message(chat_id, """
-🤖 **بوت EA + Outlook + PSN v3.0**
+    # ===== قائمة الأوامر الرئيسية =====
+    menu = """
+🤖 **EA + Outlook + PSN Checker v4.0** 🌟
 
-📌 **الأوامر:**
-/generate - توليد إيميلات
-/check_ea - فحص EA (تلقائي يشمل MS)
-/check_psn - فحص PlayStation
-/add_proxy - إضافة بروكسيات (ارفع ملف)
-/stop - إيقاف الفحص
-/stats - إحصائيات
-/export - تصدير
-/help - مساعدة
-        """)
+📌 **الأوامر المتاحة:**
+
+/generate  🚀 توليد إيميلات (تفاعلي)
+/check_ea   🔍 فحص EA (تلقائي يشمل MS)
+/check_psn  🎮 فحص PlayStation
+/add_proxy  🌐 إضافة بروكسيات (رفع ملف أو كتابة)
+/check      📧 فحص إيميل واحد
+/stop       ⏹️ إيقاف الفحص
+/stats      📊 إحصائيات
+/export     📁 تصدير النتائج
+/menu       📋 عرض هذه القائمة
+/help       ❓ المساعدة
+"""
+    
+    if text == "/start" or text == "/menu":
+        send_message(chat_id, menu)
     
     elif text == "/help":
-        send_message(chat_id, """
-📌 **الأوامر:**
-/generate - توليد إيميلات (يسألك خطوة بخطوة)
-/check_ea - فحص EA ثم MS تلقائياً
-/check_psn - فحص PSN
-/add_proxy - إضافة بروكسيات (ارفع ملف .txt)
-/stop - إيقاف الفحص
-/stats - إحصائيات
-/export - تصدير الملفات
-        """)
+        send_message(chat_id, menu)
     
     elif text == "/add_proxy":
-        send_message(chat_id, "📤 **أرسل ملف البروكسيات** (TXT)\nكل بروكسي في سطر بالشكل:\nhttp://user:pass@ip:port\nsocks5://ip:port\nhttp://ip:port")
+        send_message(chat_id, "📤 **أرسل البروكسيات** (نصاً أو ملفاً)\nكل بروكسي في سطر:\n`http://user:pass@ip:port`\n`socks5://ip:port`\n`http://ip:port`")
     
     elif text == "/generate":
         user_sessions[chat_id] = {'step': 'awaiting_first'}
-        send_message(chat_id, "📝 أرسل الكلمة الأولى (مثل: king):")
+        send_message(chat_id, "📝 أرسل الكلمة الأولى (مثل: `king`):")
     
     elif text == "/stop":
         running_tasks[chat_id] = False
         send_message(chat_id, "⏹️ جاري إيقاف الفحص...")
     
     elif text == "/check_ea":
-        emails = read_file(os.path.join(DATA_DIR, 'emails.txt'))
+        emails = read_file(DATA_DIR / 'emails.txt')
         if not emails:
-            send_message(chat_id, "❌ لا توجد إيميلات! استخدم /generate")
+            send_message(chat_id, "❌ لا توجد إيميلات! استخدم `/generate` أولاً")
             return
-        proxies = read_file(os.path.join(DATA_DIR, 'proxies.txt'))
+        proxies = read_file(DATA_DIR / 'proxies.txt')
         if not proxies:
-            send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم /add_proxy")
+            send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم `/add_proxy`")
             return
         running_tasks[chat_id] = True
-        import threading
         threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
     
     elif text == "/check_psn":
-        emails = read_file(os.path.join(DATA_DIR, 'emails.txt'))
+        emails = read_file(DATA_DIR / 'emails.txt')
         if not emails:
-            send_message(chat_id, "❌ لا توجد إيميلات!")
+            send_message(chat_id, "❌ لا توجد إيميلات! استخدم `/generate`")
             return
-        proxies = read_file(os.path.join(DATA_DIR, 'proxies.txt'))
+        proxies = read_file(DATA_DIR / 'proxies.txt')
         if not proxies:
-            send_message(chat_id, "⚠️ لا توجد بروكسيات!")
+            send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم `/add_proxy`")
             return
         running_tasks[chat_id] = True
-        import threading
         threading.Thread(target=run_psn_check, args=(chat_id, emails, proxies), daemon=True).start()
+    
+    elif text == "/check":
+        # تنسيق /check email@example.com
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "❌ استخدم: `/check email@example.com`")
+            return
+        email = parts[1]
+        if '@' not in email:
+            send_message(chat_id, "❌ الإيميل غير صالح")
+            return
+        # فحص فوري
+        send_message(chat_id, f"📧 جاري فحص: `{email}`")
+        proxy = read_file(DATA_DIR / 'proxies.txt')
+        p = proxy[0] if proxy else None
+        ea = check_ea(email, p)
+        ms = check_ms(email, p)
+        psn = check_psn(email, p)
+        send_message(chat_id, f"📧 **{email}**\n🔗 EA: {ea}\n📤 MS: {ms}\n🎮 PSN: {psn}")
     
     elif text == "/stats":
         files = {
@@ -434,31 +486,35 @@ def process_command(chat_id, text):
         }
         msg = "📊 **الإحصائيات:**\n"
         for f, label in files.items():
-            count = len(read_file(os.path.join(DATA_DIR, f)))
+            count = len(read_file(DATA_DIR / f))
             msg += f"{label}: {count}\n"
-        proxies = len(read_file(os.path.join(DATA_DIR, 'proxies.txt')))
-        msg += f"🌐 بروكسيات: {proxies}"
+        proxies = len(read_file(DATA_DIR / 'proxies.txt'))
+        msg += f"🌐 بروكسيات محملة: {proxies}"
         send_message(chat_id, msg)
     
     elif text == "/export":
-        files_list = ['emails.txt', 'Linked.txt', 'NotLinked.txt', 'Available.txt', 'NotAvailable.txt', 'Errors.txt', 'PSN_Linked.txt', 'PSN_NotLinked.txt', 'PSN_Errors.txt']
+        files_list = ['Linked.txt', 'NotLinked.txt', 'Available.txt', 'NotAvailable.txt', 'Errors.txt', 'PSN_Linked.txt', 'PSN_NotLinked.txt', 'PSN_Errors.txt']
         sent = 0
         for f in files_list:
-            path = os.path.join(DATA_DIR, f)
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                send_message(chat_id, f"📄 {f}: {len(read_file(path))} سطر")
+            path = DATA_DIR / f
+            if path.exists() and path.stat().st_size > 0:
+                send_file(chat_id, path, f"📄 {f}")
                 sent += 1
         if sent == 0:
-            send_message(chat_id, "❌ لا توجد ملفات")
+            send_message(chat_id, "❌ لا توجد نتائج للتصدير")
         else:
-            send_message(chat_id, f"✅ تم عرض {sent} ملف")
+            send_message(chat_id, f"✅ تم إرسال {sent} ملف")
+    
+    else:
+        # أي أمر غير معروف – لا نرد (يسكت)
+        pass
 
 # ============================================
 # 🏃 تشغيل البوت
 # ============================================
 def run_bot():
-    print("🤖 البوت يعمل...")
-    print(f"📁 البيانات: {DATA_DIR}")
+    logger.info("🤖 EA + Outlook + PSN Checker v4.0")
+    logger.info("📁 البيانات: %s", DATA_DIR)
     last_id = 0
     
     while True:
@@ -471,7 +527,6 @@ def run_bot():
                 msg = u.get('message', {})
                 chat_id = msg.get('chat', {}).get('id')
                 
-                # ===== معالجة الملفات المرفوعة =====
                 if 'document' in msg:
                     file_id = msg['document']['file_id']
                     try:
@@ -485,28 +540,37 @@ def run_bot():
                             with urllib.request.urlopen(req2, timeout=30) as resp2:
                                 content = resp2.read().decode('utf-8', errors='ignore')
                                 proxies = [p.strip() for p in content.split('\n') if p.strip()]
-                                write_file(os.path.join(DATA_DIR, 'proxies.txt'), proxies)
+                                write_file(DATA_DIR / 'proxies.txt', proxies)
                                 send_message(chat_id, f"🌐 تم استلام {len(proxies)} بروكسي وحفظها بنجاح\n📁 المجموع: {len(proxies)}")
-                    except Exception as e:
-                        send_message(chat_id, f"❌ فشل في قراءة الملف: {str(e)}")
+                    except Exception as exc:
+                        logger.exception("Failed to process uploaded file: %s", exc)
+                        send_message(chat_id, f"❌ فشل في قراءة الملف: {str(exc)}")
                     continue
                 
-                # ===== معالجة النصوص =====
                 text = msg.get('text', '')
                 if chat_id and text:
                     if text.startswith('/'):
-                        print(f"📩 أمر: {text}")
+                        logger.info("📩 أمر: %s", text)
                         process_command(chat_id, text)
                     elif text.startswith('http') or text.startswith('socks'):
                         proxies = [p.strip() for p in text.split('\n') if p.strip()]
-                        existing = read_file(os.path.join(DATA_DIR, 'proxies.txt'))
+                        existing = read_file(DATA_DIR / 'proxies.txt')
                         all_proxies = existing + proxies
-                        write_file(os.path.join(DATA_DIR, 'proxies.txt'), all_proxies)
+                        write_file(DATA_DIR / 'proxies.txt', all_proxies)
                         send_message(chat_id, f"🌐 تم إضافة {len(proxies)} بروكسي\n📁 المجموع: {len(all_proxies)}")
+                    elif '@' in text and len(text.split()) == 1:
+                        email = text.strip()
+                        send_message(chat_id, f"📧 جاري فحص: `{email}`")
+                        proxy = read_file(DATA_DIR / 'proxies.txt')
+                        p = proxy[0] if proxy else None
+                        ea = check_ea(email, p)
+                        ms = check_ms(email, p)
+                        psn = check_psn(email, p)
+                        send_message(chat_id, f"📧 **{email}**\n🔗 EA: {ea}\n📤 MS: {ms}\n🎮 PSN: {psn}")
             
             time.sleep(2)
-        except Exception as e:
-            print(f"❌ {e}")
+        except Exception as exc:
+            logger.exception("Unexpected error in main loop: %s", exc)
             time.sleep(5)
 
 if __name__ == '__main__':
