@@ -3,11 +3,16 @@ import time
 import json
 import urllib.request
 import urllib.error
-import threading
 from datetime import datetime
 
-BOT_TOKEN = "8967466749:AAFMNlEI0lORHUG0EibzA92a2f93Hh199B4"
+# ============================================
+# 🔑 توكن البوت (تم التحديث)
+# ============================================
+BOT_TOKEN = "8761475257:AAFWe7VRfRSaKtPC-bRAkcZy_oh9VUzJIEk"
 
+# ============================================
+# 📁 الإعدادات
+# ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -15,6 +20,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 user_sessions = {}
 running_tasks = {}
 
+# ============================================
+# 📂 دوال الملفات
+# ============================================
 def read_file(path):
     if not os.path.exists(path):
         return []
@@ -33,24 +41,33 @@ def clear_file(path):
     if os.path.exists(path):
         os.remove(path)
 
+# ============================================
+# 🔍 فاحص EA
+# ============================================
 def check_ea(email, proxy=None):
     try:
-        url = f'https://signin.ea.com/p/{email}'
-        req = urllib.request.Request(url, method='HEAD')
+        url = f'https://signin.ea.com/p/ajax/user/checkEmailAvailability?email={email}'
+        req = urllib.request.Request(url, method='GET')
         req.add_header('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)')
         if proxy:
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
             opener = urllib.request.build_opener(proxy_handler)
             urllib.request.install_opener(opener)
         with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status == 200
+            data = json.loads(resp.read().decode())
+            if data.get('available') == True:
+                return 'not-linked'
+            return 'linked'
     except:
-        return False
+        return 'error'
 
+# ============================================
+# 🔍 فاحص Microsoft
+# ============================================
 def check_ms(email, proxy=None):
     try:
-        url = 'https://login.live.com/GetCredentialType.srf'
-        data = json.dumps({"Username": email}).encode('utf-8')
+        url = 'https://login.microsoftonline.com/common/GetCredentialType'
+        data = json.dumps({"username": email, "isOtherIdpSupported": True}).encode('utf-8')
         req = urllib.request.Request(url, data=data, method='POST')
         req.add_header('Content-Type', 'application/json')
         if proxy:
@@ -59,38 +76,118 @@ def check_ms(email, proxy=None):
             urllib.request.install_opener(opener)
         with urllib.request.urlopen(req, timeout=6) as resp:
             result = json.loads(resp.read().decode())
-            if result.get('IfExistsResult') == 0:
+            if result.get('IfExistsResult') == 1:
                 return 'available'
-            elif result.get('IfExistsResult') == 1:
-                return 'not_available'
+            elif result.get('IfExistsResult') in [0, 4, 5, 6]:
+                return 'not-available'
             else:
                 return 'error'
     except:
         return 'error'
 
+# ============================================
+# 🔍 فاحص PlayStation (PSN)
+# ============================================
 def check_psn(email, proxy=None):
     try:
-        url = 'https://account.sonyentertainmentnetwork.com/api/v1/ssoc/email'
-        data = json.dumps({"email": email}).encode('utf-8')
+        url = 'https://ca.account.sony.com/api/v1/ssocookie'
+        data = json.dumps({
+            "authentication_type": "password",
+            "username": email,
+            "password": "Probe__X9$!!"
+        }).encode('utf-8')
         req = urllib.request.Request(url, data=data, method='POST')
         req.add_header('Content-Type', 'application/json')
-        req.add_header('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)')
         if proxy:
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
             opener = urllib.request.build_opener(proxy_handler)
             urllib.request.install_opener(opener)
         with urllib.request.urlopen(req, timeout=6) as resp:
             result = json.loads(resp.read().decode())
-            if result.get('emailExists') == True:
-                online_id = result.get('onlineId', 'غير معروف')
-                return 'linked', online_id
+            error_code = result.get('error_code', '')
+            if error_code in ['4165', '4145', '4100', '4155']:
+                return 'linked', None
+            elif error_code in ['4168', '4150', '4160']:
+                return 'not-linked', None
             else:
-                return 'not_linked', None
+                return 'error', None
     except Exception as e:
         if 'account.notfound' in str(e):
-            return 'not_linked', None
+            return 'not-linked', None
         return 'error', None
 
+# ============================================
+# 🚀 مولد الإيميلات (جميع الصيغ)
+# ============================================
+def generate_emails(first, second=''):
+    domains = ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com']
+    results = set()
+    separators = ['', '-', '.', '_']
+    years = list(range(1970, 2031))
+    numbers = list(range(0, 1000))
+    extra_words = ['PLAY', 'PLAYSTATION', 'PS3', 'PSN']
+    
+    words = [first]
+    if second:
+        words.append(second)
+    
+    for w in words:
+        results.add(w)
+        for sep in separators:
+            if sep:
+                results.add(w + sep + w)
+            for num in numbers[:200]:
+                if sep:
+                    results.add(w + sep + str(num))
+                else:
+                    results.add(w + str(num))
+            for year in years[:20]:
+                if sep:
+                    results.add(w + sep + str(year))
+                else:
+                    results.add(w + str(year))
+    
+    if second:
+        results.add(first + second)
+        results.add(second + first)
+        for sep in separators:
+            if sep:
+                results.add(first + sep + second)
+                results.add(second + sep + first)
+                for num in numbers[:200]:
+                    results.add(first + sep + second + sep + str(num))
+                    results.add(second + sep + first + sep + str(num))
+                for year in years[:20]:
+                    results.add(first + sep + second + sep + str(year))
+                    results.add(second + sep + first + sep + str(year))
+            else:
+                for num in numbers[:200]:
+                    results.add(first + second + str(num))
+                    results.add(second + first + str(num))
+                for year in years[:20]:
+                    results.add(first + second + str(year))
+                    results.add(second + first + str(year))
+        
+        for extra in extra_words:
+            for sep in separators:
+                if sep:
+                    results.add(first + sep + extra)
+                    results.add(second + sep + extra)
+                    results.add(first + sep + second + sep + extra)
+                else:
+                    results.add(first + extra)
+                    results.add(second + extra)
+                    results.add(first + second + extra)
+    
+    final = []
+    for email in results:
+        for domain in domains:
+            final.append(email + domain)
+    return list(set(final))
+
+# ============================================
+# 🌐 دوال التلغرام
+# ============================================
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -135,93 +232,9 @@ def get_updates(offset=None):
     except:
         return []
 
-def generate_emails(first, second):
-    """توليد جميع الصيغ الممكنة (مثل الملف المطلوب)"""
-    domains = ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com']
-    results = set()
-    separators = ['', '-', '.', '_']
-    years = list(range(1970, 2031))
-    numbers = list(range(0, 1000))
-    extra_words = ['PLAY', 'PLAYSTATION', 'PLAYSTATION3', 'PS3', 'PSN']
-    
-    words = [first]
-    if second:
-        words.append(second)
-    
-    # 1. الكلمة الأساسية
-    for w in words:
-        results.add(w)
-        # مع فواصل وتكرار
-        for sep in separators:
-            if sep:
-                results.add(w + sep + w)
-            # مع أرقام
-            for num in numbers[:200]:
-                if sep:
-                    results.add(w + sep + str(num))
-                else:
-                    results.add(w + str(num))
-            # مع سنوات
-            for year in years[:20]:
-                if sep:
-                    results.add(w + sep + str(year))
-                else:
-                    results.add(w + str(year))
-    
-    if second:
-        # 2. دمج الكلمتين
-        results.add(first + second)
-        results.add(second + first)
-        
-        for sep in separators:
-            if sep:
-                results.add(first + sep + second)
-                results.add(second + sep + first)
-                # مع أرقام
-                for num in numbers[:200]:
-                    results.add(first + sep + second + sep + str(num))
-                    results.add(second + sep + first + sep + str(num))
-                # مع سنوات
-                for year in years[:20]:
-                    results.add(first + sep + second + sep + str(year))
-                    results.add(second + sep + first + sep + str(year))
-            else:
-                for num in numbers[:200]:
-                    results.add(first + second + str(num))
-                    results.add(second + first + str(num))
-                for year in years[:20]:
-                    results.add(first + second + str(year))
-                    results.add(second + first + str(year))
-        
-        # 3. كلمات إضافية (PLAY, PSN...)
-        for extra in extra_words:
-            for sep in separators:
-                if sep:
-                    results.add(first + sep + extra)
-                    results.add(second + sep + extra)
-                    results.add(first + sep + second + sep + extra)
-                else:
-                    results.add(first + extra)
-                    results.add(second + extra)
-                    results.add(first + second + extra)
-        
-        # 4. أنماط خاصة (q-q-0, q.q.0, q_q_0)
-        for sep1 in ['-', '.', '_']:
-            for sep2 in ['-', '.', '_']:
-                results.add(first + sep1 + second + sep2 + '0')
-                results.add(first + sep1 + second + sep2 + '100')
-                results.add(first + sep1 + second + sep2 + '123')
-                results.add(first + sep1 + second + sep2 + '2026')
-                for num in numbers[:100]:
-                    results.add(first + sep1 + second + sep2 + str(num))
-    
-    # إضافة النطاقات
-    final = []
-    for email in results:
-        for domain in domains:
-            final.append(email + domain)
-    return list(set(final))
-
+# ============================================
+# ⚙️ تشغيل الفحوصات (خيوط)
+# ============================================
 def run_ea_check(chat_id, emails, proxies):
     clear_file(os.path.join(DATA_DIR, 'Linked.txt'))
     clear_file(os.path.join(DATA_DIR, 'NotLinked.txt'))
@@ -234,10 +247,11 @@ def run_ea_check(chat_id, emails, proxies):
             send_message(chat_id, "⏹️ تم إيقاف الفحص")
             break
         proxy = proxies[i % len(proxies)] if proxies else None
-        if check_ea(email, proxy):
+        result = check_ea(email, proxy)
+        if result == 'linked':
             linked.append(email)
             append_file(os.path.join(DATA_DIR, 'Linked.txt'), email)
-        else:
+        elif result == 'not-linked':
             not_linked.append(email)
             append_file(os.path.join(DATA_DIR, 'NotLinked.txt'), email)
         if (i+1) % 10 == 0 or (i+1) == total:
@@ -268,7 +282,7 @@ def run_ms_check(chat_id, emails, proxies):
         if result == 'available':
             available.append(email)
             append_file(os.path.join(DATA_DIR, 'Available.txt'), email)
-        elif result == 'not_available':
+        elif result == 'not-available':
             not_available.append(email)
             append_file(os.path.join(DATA_DIR, 'NotAvailable.txt'), email)
         else:
@@ -294,12 +308,11 @@ def run_psn_check(chat_id, emails, proxies):
             send_message(chat_id, "⏹️ تم إيقاف الفحص")
             break
         proxy = proxies[i % len(proxies)] if proxies else None
-        status, online_id = check_psn(email, proxy)
+        status, _ = check_psn(email, proxy)
         if status == 'linked':
-            line = f"{email} | ID: {online_id}"
-            linked.append(line)
-            append_file(os.path.join(DATA_DIR, 'PSN_Linked.txt'), line)
-        elif status == 'not_linked':
+            linked.append(email)
+            append_file(os.path.join(DATA_DIR, 'PSN_Linked.txt'), email)
+        elif status == 'not-linked':
             not_linked.append(email)
             append_file(os.path.join(DATA_DIR, 'PSN_NotLinked.txt'), email)
         else:
@@ -309,9 +322,12 @@ def run_psn_check(chat_id, emails, proxies):
             send_message(chat_id, f"📊 PSN {i+1}/{total}\n🎮 {len(linked)}\n❌ {len(not_linked)}\n⚠️ {len(errors)}")
     send_message(chat_id, f"✅ انتهى PSN\n🎮 {len(linked)}\n❌ {len(not_linked)}\n⚠️ {len(errors)}")
     if linked:
-        send_file(chat_id, os.path.join(DATA_DIR, 'PSN_Linked.txt'), "🎮 المرتبطة بـ PSN (مع الـ ID)")
+        send_file(chat_id, os.path.join(DATA_DIR, 'PSN_Linked.txt'), "🎮 المرتبطة بـ PSN")
     running_tasks[chat_id] = False
 
+# ============================================
+# ⚙️ معالج الأوامر
+# ============================================
 def process_command(chat_id, text):
     global user_sessions
     
@@ -341,10 +357,31 @@ def process_command(chat_id, text):
     
     # ===== الأوامر الرئيسية =====
     if text == "/start":
-        send_message(chat_id, "🤖 **بوت EA + Outlook + PSN v3.0**\n\n📌 **الأوامر:**\n/generate - توليد إيميلات\n/check_ea - فحص EA (تلقائي يشمل MS)\n/check_psn - فحص PlayStation\n/add_proxy - إضافة بروكسيات (ارفع ملف)\n/stop - إيقاف الفحص\n/stats - إحصائيات\n/export - تصدير\n/help - مساعدة")
+        send_message(chat_id, """
+🤖 **بوت EA + Outlook + PSN v3.0**
+
+📌 **الأوامر:**
+/generate - توليد إيميلات
+/check_ea - فحص EA (تلقائي يشمل MS)
+/check_psn - فحص PlayStation
+/add_proxy - إضافة بروكسيات (ارفع ملف)
+/stop - إيقاف الفحص
+/stats - إحصائيات
+/export - تصدير
+/help - مساعدة
+        """)
     
     elif text == "/help":
-        send_message(chat_id, "📌 **الأوامر:**\n/generate - توليد إيميلات\n/check_ea - فحص EA ثم MS تلقائياً\n/check_psn - فحص PSN\n/add_proxy - إضافة بروكسيات (ارفع ملف .txt)\n/stop - إيقاف الفحص\n/stats - إحصائيات\n/export - تصدير الملفات")
+        send_message(chat_id, """
+📌 **الأوامر:**
+/generate - توليد إيميلات (يسألك خطوة بخطوة)
+/check_ea - فحص EA ثم MS تلقائياً
+/check_psn - فحص PSN
+/add_proxy - إضافة بروكسيات (ارفع ملف .txt)
+/stop - إيقاف الفحص
+/stats - إحصائيات
+/export - تصدير الملفات
+        """)
     
     elif text == "/add_proxy":
         send_message(chat_id, "📤 **أرسل ملف البروكسيات** (TXT)\nكل بروكسي في سطر بالشكل:\nhttp://user:pass@ip:port\nsocks5://ip:port\nhttp://ip:port")
@@ -367,6 +404,7 @@ def process_command(chat_id, text):
             send_message(chat_id, "⚠️ لا توجد بروكسيات! استخدم /add_proxy")
             return
         running_tasks[chat_id] = True
+        import threading
         threading.Thread(target=run_ea_check, args=(chat_id, emails, proxies), daemon=True).start()
     
     elif text == "/check_psn":
@@ -379,6 +417,7 @@ def process_command(chat_id, text):
             send_message(chat_id, "⚠️ لا توجد بروكسيات!")
             return
         running_tasks[chat_id] = True
+        import threading
         threading.Thread(target=run_psn_check, args=(chat_id, emails, proxies), daemon=True).start()
     
     elif text == "/stats":
@@ -413,61 +452,58 @@ def process_command(chat_id, text):
             send_message(chat_id, "❌ لا توجد ملفات")
         else:
             send_message(chat_id, f"✅ تم عرض {sent} ملف")
-    
-    else:
-        # لا يرد على أي أمر غير معروف (يسكت)
-        pass
 
+# ============================================
+# 🏃 تشغيل البوت
+# ============================================
 def run_bot():
     print("🤖 البوت يعمل...")
     print(f"📁 البيانات: {DATA_DIR}")
     last_id = 0
+    
     while True:
         try:
             updates = get_updates(last_id + 1)
             for u in updates:
-                # معالجة الملفات المرفوعة
-                if 'message' in u:
-                    msg = u['message']
-                    chat_id = msg.get('chat', {}).get('id')
-                    # التحقق من وجود ملف
-                    if 'document' in msg:
-                        file_id = msg['document']['file_id']
-                        file_name = msg['document'].get('file_name', 'unknown.txt')
-                        # تحميل الملف
-                        try:
-                            get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
-                            req = urllib.request.Request(get_file_url, method='GET')
-                            with urllib.request.urlopen(req, timeout=10) as resp:
-                                file_info = json.loads(resp.read().decode())
-                                file_path = file_info['result']['file_path']
-                                download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                                req2 = urllib.request.Request(download_url, method='GET')
-                                with urllib.request.urlopen(req2, timeout=30) as resp2:
-                                    content = resp2.read().decode('utf-8', errors='ignore')
-                                    proxies = [p.strip() for p in content.split('\n') if p.strip()]
-                                    write_file(os.path.join(DATA_DIR, 'proxies.txt'), proxies)
-                                    send_message(chat_id, f"🌐 تم استلام {len(proxies)} بروكسي وحفظها بنجاح\n📁 المجموع: {len(proxies)}")
-                        except Exception as e:
-                            send_message(chat_id, f"❌ فشل في قراءة الملف: {str(e)}")
-                        continue
-                    
-                    # معالجة النصوص
-                    text = msg.get('text', '')
-                    if chat_id and text:
-                        if text.startswith('/'):
-                            print(f"📩 أمر: {text}")
-                            process_command(chat_id, text)
-                        elif text.startswith('http') or text.startswith('socks'):
-                            proxies = [p.strip() for p in text.split('\n') if p.strip()]
-                            existing = read_file(os.path.join(DATA_DIR, 'proxies.txt'))
-                            all_proxies = existing + proxies
-                            write_file(os.path.join(DATA_DIR, 'proxies.txt'), all_proxies)
-                            send_message(chat_id, f"🌐 تم إضافة {len(proxies)} بروكسي\n📁 المجموع: {len(all_proxies)}")
-                
-                # حفظ update_id
-                if u.get('update_id', 0) > last_id:
+                if u['update_id'] > last_id:
                     last_id = u['update_id']
+                
+                msg = u.get('message', {})
+                chat_id = msg.get('chat', {}).get('id')
+                
+                # ===== معالجة الملفات المرفوعة =====
+                if 'document' in msg:
+                    file_id = msg['document']['file_id']
+                    try:
+                        get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+                        req = urllib.request.Request(get_file_url, method='GET')
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            file_info = json.loads(resp.read().decode())
+                            file_path = file_info['result']['file_path']
+                            download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                            req2 = urllib.request.Request(download_url, method='GET')
+                            with urllib.request.urlopen(req2, timeout=30) as resp2:
+                                content = resp2.read().decode('utf-8', errors='ignore')
+                                proxies = [p.strip() for p in content.split('\n') if p.strip()]
+                                write_file(os.path.join(DATA_DIR, 'proxies.txt'), proxies)
+                                send_message(chat_id, f"🌐 تم استلام {len(proxies)} بروكسي وحفظها بنجاح\n📁 المجموع: {len(proxies)}")
+                    except Exception as e:
+                        send_message(chat_id, f"❌ فشل في قراءة الملف: {str(e)}")
+                    continue
+                
+                # ===== معالجة النصوص =====
+                text = msg.get('text', '')
+                if chat_id and text:
+                    if text.startswith('/'):
+                        print(f"📩 أمر: {text}")
+                        process_command(chat_id, text)
+                    elif text.startswith('http') or text.startswith('socks'):
+                        proxies = [p.strip() for p in text.split('\n') if p.strip()]
+                        existing = read_file(os.path.join(DATA_DIR, 'proxies.txt'))
+                        all_proxies = existing + proxies
+                        write_file(os.path.join(DATA_DIR, 'proxies.txt'), all_proxies)
+                        send_message(chat_id, f"🌐 تم إضافة {len(proxies)} بروكسي\n📁 المجموع: {len(all_proxies)}")
+            
             time.sleep(2)
         except Exception as e:
             print(f"❌ {e}")
