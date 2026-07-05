@@ -262,8 +262,6 @@ def process_command(chat_id, text):
         all_proxies = existing + proxies
         write_file(os.path.join(DATA_DIR, 'proxies.txt'), all_proxies)
         send_message(chat_id, f"🌐 تم إضافة {len(proxies)} بروكسي\n📁 المجموع: {len(all_proxies)}")
-    else:
-        send_message(chat_id, f"❌ أمر غير معروف: {text}\nاستخدم /help")
 
 def run_bot():
     print("🤖 البوت يعمل...")
